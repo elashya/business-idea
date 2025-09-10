@@ -135,13 +135,15 @@ PROMPT_VARIANTS: Dict[str, List[Callable[[str, str, str], str]]] = {
 # OpenAI client
 # =======================
 def get_openai_client():
-    try:
-        from openai import OpenAI
-        return OpenAI()  # expects OPENAI_API_KEY in Streamlit secrets
-    except Exception as e:
+    import os, streamlit as st
+    from openai import OpenAI
+
+    api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not api_key:
         raise RuntimeError(
-            "OpenAI client not available. Set OPENAI_API_KEY in Streamlit secrets and add `openai` to requirements."
-        ) from e
+            "Missing OPENAI_API_KEY. Add it in Streamlit Cloud → App → Settings → Secrets."
+        )
+    return OpenAI(api_key=api_key)
 
 # =======================
 # Schemas & Validation
