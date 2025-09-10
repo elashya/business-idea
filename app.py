@@ -1,8 +1,9 @@
-import json, time, random, os, hashlib
+import json, time, os, hashlib
 from typing import List, Dict, Callable
 
 import streamlit as st
 import pandas as pd
+import streamlit.components.v1 as components
 from pydantic import BaseModel, ValidationError, conlist, confloat, field_validator
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -60,7 +61,7 @@ RUBRICS = {
     "support": "10: self-serve, low cost; 7–8: manageable; 5–6: costly; ≤4: unsustainable.",
 }
 
-# Few-shot anchors (add more over time for stability)
+# Few-shot anchors (optional, add more over time)
 FEW_SHOTS = {
     "finance": {
         "idea": "A SaaS tool for freelancers that tracks invoices and auto-chases late payments.",
@@ -172,7 +173,6 @@ def require_pin():
         st.error("Too many incorrect attempts. Please refresh and try again later.")
         st.stop()
 
-    st.set_page_config(page_title=APP_TITLE, page_icon="🧭", layout="wide")
     st.title("🔐 Enter Access PIN")
     with st.form("pin_form"):
         user_pin = st.text_input("PIN", type="password")
@@ -199,15 +199,15 @@ def require_pin():
         st.stop()
 
 # =========================================================
-# Pydantic schema + sanitization
+# Pydantic schema (Pydantic v2: conlist uses min_length/max_length)
 # =========================================================
 class LensOutput(BaseModel):
     lens_key: str
     score: confloat(ge=0, le=10)
-    strengths: conlist(str, min_items=1, max_items=8)
-    weaknesses: conlist(str, min_items=1, max_items=8)
-    risks: conlist(str, min_items=1, max_items=8)
-    mitigations: conlist(str, min_items=1, max_items=8)
+    strengths: conlist(str, min_length=1, max_length=8)
+    weaknesses: conlist(str, min_length=1, max_length=8)
+    risks: conlist(str, min_length=1, max_length=8)
+    mitigations: conlist(str, min_length=1, max_length=8)
 
     @field_validator("strengths", "weaknesses", "risks", "mitigations")
     @classmethod
@@ -260,11 +260,10 @@ def _build_messages_for_lens(lens_key: str, lens_name: str, idea_text: str, vari
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=0.7, min=0.5, max=2))
 def call_lens(client, lens_key: str, lens_name: str, idea_text: str, variant_idx: int, seed: int | None):
-    msgs = _build_messages_for_lens(lens_key, lens_name, idea_text, variant_idx)
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
         temperature=0.3,
-        messages=msgs,
+        messages=_build_messages_for_lens(lens_key, lens_name, idea_text, variant_idx),
         response_format={"type": "json_object"},
         **({"seed": seed} if seed is not None else {})
     )
@@ -278,14 +277,11 @@ def call_lens(client, lens_key: str, lens_name: str, idea_text: str, variant_idx
     return sanitize_output(data)
 
 def repair_lens_json(client, lens_key, lens_name, idea_text, bad_json, validation_msg, variant_idx: int, seed: int | None):
-    repair_inst = f"""Your previous JSON for lens '{lens_key}' failed validation.
-Validation error: {validation_msg}
-Return corrected JSON ONLY. Keep the same schema and constraints."""
     msgs = [
         {"role": "system", "content": lens_system_prompt(lens_key, lens_name, variant_idx)},
         {"role": "user", "content": "STARTUP_IDEA:\n" + idea_text.strip()},
         {"role": "user", "content": "PREVIOUS_JSON:\n" + json.dumps(bad_json, ensure_ascii=False)},
-        {"role": "user", "content": repair_inst},
+        {"role": "user", "content": f"Your previous JSON for '{lens_key}' failed validation: {validation_msg}\nReturn corrected JSON ONLY, same schema."},
     ]
     resp = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -310,7 +306,7 @@ def call_summary(client, lenses_json: List[Dict], seed: int | None):
     return resp.choices[0].message.content.strip()
 
 # =========================================================
-# Scoring / Tables / Fingerprint
+# Scoring / Tables / Fingerprint / Printable HTML
 # =========================================================
 def aggregate_score(lenses: List[Dict], weights: Dict[str, float]) -> float:
     active = {k: v for k, v in weights.items() if any(l["lens_key"] == k for l in lenses)}
@@ -343,13 +339,42 @@ def config_fingerprint(lenses, weights, variant_choice, rubrics) -> str:
     h = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
     return h[:8]
 
+def build_printable_html(full_json: dict, df: pd.DataFrame, summary: str, overall: float, cfg_fp: str) -> str:
+    table_html = df.to_html(index=False, border=0, escape=True)
+    safe_json = json.dumps(full_json, ensure_ascii=False, indent=2)
+    css = """
+    <style>
+      body { font-family: Inter, Arial, sans-serif; margin: 32px; }
+      h1,h2,h3 { margin: 0 0 8px; }
+      .meta { color: #555; margin-bottom: 16px; }
+      table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+      th, td { border: 1px solid #ddd; padding: 8px; font-size: 12.5px; }
+      pre { background: #fafafa; border: 1px solid #eee; padding: 12px; overflow: auto; }
+      @media print {
+        .no-print { display: none !important; }
+        body { margin: 8mm; }
+      }
+    </style>
+    """
+    return f"""<!doctype html><html><head><meta charset="utf-8"><title>Startup Idea Report</title>{css}</head>
+<body onload="window.print()">
+  <h1>Startup Idea Evaluation Report</h1>
+  <div class="meta">Overall Score: <b>{overall}/100</b> • Config: {cfg_fp} • Schema v{SCHEMA_VERSION}</div>
+  <h2>Executive Summary</h2>
+  <p>{summary}</p>
+  <h2>Lens Breakdown</h2>
+  {table_html}
+  <h2>Full JSON</h2>
+  <pre>{safe_json}</pre>
+  <button class="no-print" onclick="window.print()">Print</button>
+</body></html>"""
+
 # =========================================================
 # UI
 # =========================================================
-# PIN gate FIRST (blocks until success if PIN configured)
+st.set_page_config(page_title=APP_TITLE, page_icon="🧭", layout="wide")
 require_pin()
 
-st.set_page_config(page_title=APP_TITLE, page_icon="🧭", layout="wide")
 st.title(APP_TITLE)
 st.caption("Paste your idea (≤500 words). We return multi-SME scores + a concise summary. Nothing is stored unless you download.")
 
@@ -446,6 +471,7 @@ if run_btn:
     }
     st.code(json.dumps(full, ensure_ascii=False, indent=2), language="json")
 
+    # ---- Download & Print Options ----
     st.download_button(
         "Download report (JSON)",
         data=json.dumps(full, ensure_ascii=False).encode("utf-8"),
@@ -453,6 +479,17 @@ if run_btn:
         mime="application/json",
         use_container_width=True,
     )
+    printable_html = build_printable_html(full, df, summary, overall, cfg_fp)
+    st.download_button(
+        "Download printable report (HTML)",
+        data=printable_html.encode("utf-8"),
+        file_name="evaluation_report.html",
+        mime="text/html",
+        use_container_width=True,
+    )
+    if st.button("🖨️ Print now", use_container_width=True):
+        # Renders tiny hidden iframe that auto-triggers the browser print dialog
+        components.html(printable_html, height=0, width=0)
 
     # Privacy: do not persist input by default
     if privacy:
