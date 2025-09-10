@@ -11,8 +11,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 # App metadata / simple schema+config versioning
 # =========================================================
 APP_TITLE = "Startup Idea Copilot – Multi-SME Evaluation"
-MAX_WORDS = 300
-SCHEMA_VERSION = 2  # bump only if the JSON SHAPE changes
+MAX_WORDS = 500
+SCHEMA_VERSION = 3  # bumped for score_rationale field
 
 # =========================================================
 # Lenses & Weights
@@ -48,135 +48,97 @@ DEFAULT_WEIGHTS = {
 # =========================================================
 RUBRICS = {
     "business": (
-        "10: clear problem-solution fit, well-defined ICP, credible TAM/SAM, sharp value prop; "
+        "10: clear problem-solution fit, defined ICP, credible TAM/SAM, sharp value prop; "
         "7–8: decent clarity with some assumptions; 5–6: vague ICP or weak value prop; ≤4: no discernible business case."
     ),
     "finance": (
-        "10: pricing, CAC/LTV, margins, and path to profit are coherent; 7–8: plausible but needs data; "
-        "5–6: thin monetization or unclear unit economics; ≤4: non-viable. Stay on revenue/costs/markets—no tech/legal."
+        "10: pricing, CAC/LTV, margins, path to profit coherent; 7–8: plausible; "
+        "5–6: thin monetization or unclear unit economics; ≤4: non-viable. Finance only."
     ),
     "technology": (
         "10: feasible architecture; addresses security, reliability, scalability, integrations & data; "
-        "7–8: feasible with unknowns; 5–6: notable reliability/security risks; ≤4: not feasible. "
-        "TECH ONLY: architecture, stack, data, APIs, security, reliability, performance. Disallow market, pricing, insurance."
+        "7–8: feasible with unknowns; 5–6: notable reliability/security risks; ≤4: not feasible. Tech only."
     ),
     "legal": (
-        "10: low/clear regulatory burden with plan; 7–8: manageable issues; 5–6: notable hurdles; ≤4: blocked. "
-        "LEGAL ONLY: licenses, contracts, IP, consumer law, sector regs; not pricing/market/tech."
+        "10: low/clear regulatory burden with plan; 7–8: manageable; 5–6: notable hurdles; ≤4: blocked. Legal only."
     ),
     "privacy": (
-        "10: privacy-by-design, data minimization, user rights, transfer controls; 7–8: small gaps; "
-        "5–6: material risks; ≤4: unacceptable. PRIVACY ONLY: data categories, retention, rights, x-border, DPIA."
+        "10: privacy-by-design, minimization, user rights, transfer controls; 7–8: gaps; "
+        "5–6: material risks; ≤4: unacceptable. Privacy only."
     ),
     "marketing": (
-        "10: clear ICP, messages, channels with early GTM plan; 7–8: decent; 5–6: vague; ≤4: weak. "
-        "MARKETING ONLY: ICP, positioning, channels, funnel—no tech/legal."
+        "10: clear ICP, messages, channels with early GTM; 7–8: decent; 5–6: vague; ≤4: weak. Marketing only."
     ),
     "operations": (
-        "10: scalable processes, SLAs, supply/logistics, support model; 7–8: workable; 5–6: fragile; ≤4: bottlenecks. "
-        "OPS ONLY: processes, vendors, SLAs, capacity, QA—no pricing/market slogans."
+        "10: scalable processes, SLAs, supply/logistics, support model; 7–8: workable; 5–6: fragile; ≤4: bottlenecks. Ops only."
     ),
     "consumer": (
-        "10: strong adoption hooks, low friction, trust; 7–8: okay; 5–6: friction; ≤4: unlikely to adopt. "
-        "CONSUMER ONLY: behavior, trust, UX friction, habit loops."
+        "10: strong adoption hooks, low friction, trust; 7–8: okay; 5–6: friction; ≤4: unlikely to adopt. Consumer only."
     ),
     "competition": (
-        "10: defensible moat (switching costs, network, IP); 7–8: differentiation; 5–6: crowded; ≤4: copyable. "
-        "COMP ONLY: rivals, substitutes, defensibility—not pricing mechanics or tech minutiae unless tied to moat."
+        "10: defensible moat (switching costs, network, IP); 7–8: differentiation; 5–6: crowded; ≤4: copyable. Competition only."
     ),
     "team": (
-        "10: founding team covers domain/tech/GTM; 7–8: minor gaps; 5–6: key gaps; ≤4: weak execution readiness. "
-        "TEAM ONLY: skills, hiring plan, advisors."
+        "10: founding team covers domain/tech/GTM; 7–8: minor gaps; 5–6: key gaps; ≤4: weak execution readiness. Team only."
     ),
     "partners": (
-        "10: obvious alliances with incentives; 7–8: some; 5–6: unclear; ≤4: isolated. "
-        "PARTNERS ONLY: channels, integrators, institutions, incentives."
+        "10: obvious alliances with incentives; 7–8: some; 5–6: unclear; ≤4: isolated. Partners only."
     ),
     "ethics": (
-        "10: positive externalities, low misuse risk; 7–8: neutral; 5–6: concerns; ≤4: harmful. "
-        "ETHICS ONLY: bias, harm, fairness, externalities, safeguards."
+        "10: positive externalities, low misuse risk; 7–8: neutral; 5–6: concerns; ≤4: harmful. Ethics only."
     ),
     "branding": (
-        "10: crisp positioning, memorable name/identity; 7–8: decent; 5–6: bland; ≤4: confusing. "
-        "BRAND ONLY: message, identity, category, promise."
+        "10: crisp positioning, memorable identity; 7–8: decent; 5–6: bland; ≤4: confusing. Branding only."
     ),
     "support": (
-        "10: self-serve UX, low-cost support, clear escalation; 7–8: manageable; 5–6: costly; ≤4: unsustainable. "
-        "SUPPORT ONLY: docs, in-product help, SLAs, staffing."
+        "10: self-serve UX, low-cost support, clear escalation; 7–8: manageable; 5–6: costly; ≤4: unsustainable. Support only."
     ),
 }
 
-# =========================================================
-# Allowed / Disallowed topics per lens (for QA auditor)
-# =========================================================
+# Allowed/Disallowed (for QA auditor)
 LENS_TOPICS = {
-    "business": {
-        "allowed": ["problem-solution fit", "ICP", "TAM/SAM", "value proposition", "business model"],
-        "disallowed": ["encryption", "data retention", "regulatory fines", "database choice"],
-    },
-    "finance": {
-        "allowed": ["pricing", "CAC", "LTV", "margins", "gross margin", "payback", "revenue streams", "cost structure"],
-        "disallowed": ["encryption", "UX flow", "IoT hardware", "GDPR rights"],
-    },
-    "technology": {
-        "allowed": ["architecture", "APIs", "data model", "security", "reliability", "scalability", "latency", "cloud", "integrations"],
-        "disallowed": ["market demand", "pricing", "insurance", "contracts", "brand message"],
-    },
-    "legal": {
-        "allowed": ["contracts", "terms", "IP", "licensing", "consumer law", "sector regulation", "liability"],
-        "disallowed": ["architecture", "pricing tiers", "ad channels"],
-    },
-    "privacy": {
-        "allowed": ["data categories", "minimization", "retention", "consent", "DSAR", "SCCs", "DPIA", "data residency"],
-        "disallowed": ["pricing", "market size", "cloud SLA (unless data related)"],
-    },
-    "marketing": {
-        "allowed": ["ICP", "positioning", "messaging", "channels", "funnel", "growth loops"],
-        "disallowed": ["encryption", "DPIA", "DB sharding"],
-    },
-    "operations": {
-        "allowed": ["process", "SLA", "supply chain", "support model", "capacity", "QA", "vendor mgmt"],
-        "disallowed": ["TAM", "pricing", "UI color palette"],
-    },
-    "consumer": {
-        "allowed": ["trust", "friction", "adoption triggers", "habits", "social proof", "loss aversion"],
-        "disallowed": ["SCCs", "IP transfer", "API gateways"],
-    },
-    "competition": {
-        "allowed": ["rivals", "substitutes", "switching costs", "network effects", "moat"],
-        "disallowed": ["serverless vs VM", "cookie banners"],
-    },
-    "team": {
-        "allowed": ["skills", "experience", "hiring plan", "advisors"],
-        "disallowed": ["TLS versions", "CPC bids"],
-    },
-    "partners": {
-        "allowed": ["channels", "alliances", "platform integrations", "institutions"],
-        "disallowed": ["memory leaks", "A/B test plan"],
-    },
-    "ethics": {
-        "allowed": ["bias", "harm", "fairness", "misuse", "externalities", "safeguards"],
-        "disallowed": ["pricing tactics", "JS framework choice"],
-    },
-    "branding": {
-        "allowed": ["positioning", "identity", "category", "promise", "naming"],
-        "disallowed": ["DB index", "GDPR transfer tool"],
-    },
-    "support": {
-        "allowed": ["docs", "in-product help", "SLA", "staffing", "ticketing", "deflection"],
-        "disallowed": ["market thesis", "OCI tenancy"],
-    },
+    "business": {"allowed": ["problem-solution fit","ICP","TAM/SAM","value proposition","business model"],
+                 "disallowed": ["encryption","data retention","regulatory fines","database choice"]},
+    "finance": {"allowed": ["pricing","CAC","LTV","margins","payback","revenue streams","cost structure"],
+                "disallowed": ["encryption","UX flow","IoT hardware","GDPR rights"]},
+    "technology": {"allowed": ["architecture","APIs","data model","security","reliability","scalability","latency","cloud","integrations"],
+                   "disallowed": ["market demand","pricing","insurance","contracts","brand message"]},
+    "legal": {"allowed": ["contracts","terms","IP","licensing","consumer law","sector regulation","liability"],
+              "disallowed": ["architecture","pricing tiers","ad channels"]},
+    "privacy": {"allowed": ["data categories","minimization","retention","consent","DSAR","SCCs","DPIA","data residency"],
+                "disallowed": ["pricing","market size","cloud SLA (unless data related)"]},
+    "marketing": {"allowed": ["ICP","positioning","messaging","channels","funnel","growth loops"],
+                  "disallowed": ["encryption","DPIA","DB sharding"]},
+    "operations": {"allowed": ["process","SLA","supply chain","support model","capacity","QA","vendor mgmt"],
+                   "disallowed": ["TAM","pricing","UI color palette"]},
+    "consumer": {"allowed": ["trust","friction","adoption triggers","habits","social proof","loss aversion"],
+                 "disallowed": ["SCCs","IP transfer","API gateways"]},
+    "competition": {"allowed": ["rivals","substitutes","switching costs","network effects","moat"],
+                    "disallowed": ["serverless vs VM","cookie banners"]},
+    "team": {"allowed": ["skills","experience","hiring plan","advisors"],
+             "disallowed": ["TLS versions","CPC bids"]},
+    "partners": {"allowed": ["channels","alliances","platform integrations","institutions"],
+                 "disallowed": ["memory leaks","A/B test plan"]},
+    "ethics": {"allowed": ["bias","harm","fairness","misuse","externalities","safeguards"],
+               "disallowed": ["pricing tactics","JS framework choice"]},
+    "branding": {"allowed": ["positioning","identity","category","promise","naming"],
+                 "disallowed": ["DB index","GDPR transfer tool"]},
+    "support": {"allowed": ["docs","in-product help","SLA","staffing","ticketing","deflection"],
+                "disallowed": ["market thesis","OCI tenancy"]},
 }
 
-# =========================================================
-# Few-shot anchors (more lenses)
-# =========================================================
+# Few-shots (now with score_rationale)
 FEW_SHOTS = {
     "finance": {
         "idea": "A SaaS tool for freelancers that tracks invoices and auto-chases late payments.",
         "json": {
             "lens_key": "finance",
             "score": 7.5,
+            "score_rationale": [
+                "Recurring revenue with clear tiering",
+                "Large addressable base supports volume",
+                "CAC and churn risks temper upside"
+            ],
             "strengths": ["Recurring revenue", "Clear pricing tiers", "Large freelancer market"],
             "weaknesses": ["Unclear CAC channels", "Limited enterprise upsell story"],
             "risks": ["Churn if AR under-delivers", "Price pressure"],
@@ -188,60 +150,21 @@ FEW_SHOTS = {
         "json": {
             "lens_key": "technology",
             "score": 7.0,
+            "score_rationale": [
+                "Commodity stack is feasible",
+                "Personalization limited by sparse data",
+                "Lock-in manageable via abstraction"
+            ],
             "strengths": ["Simple stack", "Low infra needs", "Fast iterations"],
             "weaknesses": ["Sparse data may limit ML"],
             "risks": ["Cold start", "Vendor lock-in"],
             "mitigations": ["Hybrid rules+ML", "A/B tests", "Abstract provider"]
         }
-    },
-    "business": {
-        "idea": "Local marketplace for renting household tools among neighbors.",
-        "json": {
-            "lens_key": "business",
-            "score": 7.5,
-            "strengths": ["Clear pain, storage constraints", "Obvious ICP (urban renters)"],
-            "weaknesses": ["Two-sided network ramp-up"],
-            "risks": ["Chicken-and-egg inventory"],
-            "mitigations": ["Seed supply via hosts", "Campus/HOA pilots"]
-        }
-    },
-    "marketing": {
-        "idea": "Same marketplace idea.",
-        "json": {
-            "lens_key": "marketing",
-            "score": 7.0,
-            "strengths": ["Targets dense neighborhoods", "Partnerships with HOAs"],
-            "weaknesses": ["Paid CAC could be high"],
-            "risks": ["Competing marketplaces outbid on ads"],
-            "mitigations": ["Community seeding", "Referral loops", "Event-led onboarding"]
-        }
-    },
-    "privacy": {
-        "idea": "App stores KYC for borrowers and providers.",
-        "json": {
-            "lens_key": "privacy",
-            "score": 6.5,
-            "strengths": ["Data minimization options", "Short retention"],
-            "weaknesses": ["ID document handling risk"],
-            "risks": ["Cross-border transfers", "Access control gaps"],
-            "mitigations": ["Process & delete", "EU data residency", "SCCs", "User rights portal"]
-        }
-    },
-    "operations": {
-        "idea": "Shared lockboxes in apartment lobbies.",
-        "json": {
-            "lens_key": "operations",
-            "score": 7.5,
-            "strengths": ["Centralized pickup/return reduces coordination"],
-            "weaknesses": ["Key/lockbox maintenance"],
-            "risks": ["Uptime and vandalism"],
-            "mitigations": ["Telemetry, service rounds", "SLA with vendor", "Spare units"]
-        }
     }
 }
 
 # =========================================================
-# Prompt variants (A/B)
+# Prompt variants (A/B) – includes score_rationale
 # =========================================================
 def prompt_a(rubric: str, lens_name: str, lens_key: str, allowed: List[str], disallowed: List[str]) -> str:
     return (
@@ -253,13 +176,14 @@ def prompt_a(rubric: str, lens_name: str, lens_key: str, allowed: List[str], dis
         "{\n"
         f'  "lens_key": "{lens_key}",\n'
         '  "score": number 0..10,\n'
+        '  "score_rationale": ["2-4 concise, lens-specific reasons grounded in the idea text"],\n'
         '  "strengths": ["..."],\n'
         '  "weaknesses": ["..."],\n'
         '  "risks": ["..."],\n'
         '  "mitigations": ["..."]\n'
         "}\n"
         f"Scoring rubric: {rubric}\n"
-        "If any item is not lens-specific, replace it with a lens-relevant one before returning JSON."
+        "If any item is not lens-specific, replace it before returning JSON."
     )
 
 def prompt_b(rubric: str, lens_name: str, lens_key: str, allowed: List[str], disallowed: List[str]) -> str:
@@ -269,6 +193,7 @@ def prompt_b(rubric: str, lens_name: str, lens_key: str, allowed: List[str], dis
         f"Disallowed topics: {', '.join(disallowed)}.\n"
         "{\n"
         f'  "lens_key": "{lens_key}", "score": number 0..10,\n'
+        '  "score_rationale": ["2-4 concise, lens-specific reasons"],\n'
         '  "strengths": ["..."], "weaknesses": ["..."], "risks": ["..."], "mitigations": ["..."]\n'
         "}\n"
         f"Rubric: {rubric}\n"
@@ -318,10 +243,12 @@ def require_pin():
         submitted = st.form_submit_button("Enter")
     if submitted:
         ok = False
-        if pin_plain and user_pin == str(pin_plain): ok = True
+        if pin_plain and user_pin == str(pin_plain):
+            ok = True
         elif pin_hash:
             h = hashlib.sha256(user_pin.encode("utf-8")).hexdigest()
-            if h == pin_hash: ok = True
+            if h == pin_hash:
+                ok = True
         if ok:
             st.session_state["authed"] = True
             st.session_state["pin_attempts"] = 0
@@ -334,17 +261,18 @@ def require_pin():
         st.stop()
 
 # =========================================================
-# Pydantic schema (v2 syntax)
+# Pydantic schema (v2 syntax) with score_rationale
 # =========================================================
 class LensOutput(BaseModel):
     lens_key: str
     score: confloat(ge=0, le=10)
+    score_rationale: conlist(str, min_length=1, max_length=4)
     strengths: conlist(str, min_length=1, max_length=8)
     weaknesses: conlist(str, min_length=1, max_length=8)
     risks: conlist(str, min_length=1, max_length=8)
     mitigations: conlist(str, min_length=1, max_length=8)
 
-    @field_validator("strengths", "weaknesses", "risks", "mitigations")
+    @field_validator("strengths","weaknesses","risks","mitigations","score_rationale")
     @classmethod
     def no_empty_or_na(cls, v):
         cleaned = [s.strip() for s in v if isinstance(s, str) and s.strip().lower() not in {"n/a","none","-",""}]
@@ -354,7 +282,7 @@ class LensOutput(BaseModel):
 
 def sanitize_output(data: dict) -> dict:
     data["score"] = float(max(0, min(10, data.get("score", 0))))
-    for k in ("strengths","weaknesses","risks","mitigations"):
+    for k in ("strengths","weaknesses","risks","mitigations","score_rationale"):
         seq = data.get(k, [])
         data[k] = [s for s in seq if isinstance(s, str) and s.strip()][:8]
         if not data[k]: data[k] = ["(no item)"]
@@ -372,11 +300,9 @@ def lens_system_prompt(lens_key: str, lens_name: str, variant_idx: int = 0) -> s
     return builder(rubric, lens_name, lens_key, topics["allowed"], topics["disallowed"])
 
 def exec_summary_prompt() -> str:
-    return (
-        "You are an analyst. Given multiple JSON lens evaluations, write a 120–180 word executive summary:\n"
-        "- Top 3 strengths and top 3 risks\n- The 2 most critical mitigations\n- Neutral, concise tone\n"
-        "Return plain text only."
-    )
+    return ("You are an analyst. Given multiple JSON lens evaluations, write a 120–180 word executive summary:\n"
+            "- Top 3 strengths and top 3 risks\n- The 2 most critical mitigations\n- Neutral, concise tone\n"
+            "Return plain text only.")
 
 def lens_auditor_prompt(lens_key: str, lens_name: str) -> str:
     topics = LENS_TOPICS[lens_key]
@@ -438,7 +364,6 @@ def repair_lens_json(client, lens_key, lens_name, idea_text, bad_json, validatio
     return json.loads(resp.choices[0].message.content)
 
 def audit_lens_relevance(client, lens_key: str, lens_name: str, data: dict, seed: int | None) -> dict:
-    """Second-pass QA to keep bullets on-topic for the lens."""
     msgs = [
         {"role": "system", "content": lens_auditor_prompt(lens_key, lens_name)},
         {"role": "user", "content": json.dumps(data, ensure_ascii=False)}
@@ -455,7 +380,7 @@ def audit_lens_relevance(client, lens_key: str, lens_name: str, data: dict, seed
         LensOutput(**revised)
         return sanitize_output(revised)
     except ValidationError:
-        return sanitize_output(data)  # fall back to original if auditor fails
+        return sanitize_output(data)
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=0.7, min=0.5, max=2))
 def call_summary(client, lenses_json: List[Dict], seed: int | None):
@@ -482,17 +407,40 @@ def aggregate_score(lenses: List[Dict], weights: Dict[str, float]) -> float:
         s += (float(l["score"]) / 10.0) * w * (100.0 / total_w)
     return round(s, 1)
 
-def to_dataframe(lenses: List[Dict]) -> pd.DataFrame:
+def to_dataframe_overview(lenses: List[Dict], weights: Dict[str, float]) -> pd.DataFrame:
+    active_w = {l["lens_key"]: float(weights.get(l["lens_key"], 0)) for l in lenses}
+    total_w = sum(active_w.values()) or 1.0
     rows = []
     for l in lenses:
+        k = l["lens_key"]; w = active_w.get(k, 0.0)
+        contrib = (float(l["score"])/10.0) * w * (100.0/total_w)
         rows.append({
-            "Lens": l["lens_key"],
-            "Score (0-10)": l["score"],
+            "Lens": k.capitalize(),
+            "Score (0–10)": round(float(l["score"]), 2),
+            "Weight": int(w),
+            "Contribution (%)": round(contrib, 1),
+        })
+    return pd.DataFrame(rows).sort_values("Contribution (%)", ascending=False).reset_index(drop=True)
+
+def to_dataframe_detailed(lenses: List[Dict], weights: Dict[str, float]) -> pd.DataFrame:
+    # for printable report: includes rationale and top bullets
+    active_w = {l["lens_key"]: float(weights.get(l["lens_key"], 0)) for l in lenses}
+    total_w = sum(active_w.values()) or 1.0
+    rows = []
+    for l in lenses:
+        k = l["lens_key"]; w = active_w.get(k, 0.0)
+        contrib = (float(l["score"])/10.0) * w * (100.0/total_w)
+        rows.append({
+            "Lens": k.capitalize(),
+            "Score (0–10)": round(float(l["score"]), 2),
+            "Weight": int(w),
+            "Contribution (%)": round(contrib, 1),
+            "Why this score": (l.get("score_rationale") or [""])[0],
             "Top Strength": l["strengths"][0] if l["strengths"] else "",
             "Top Risk": l["risks"][0] if l["risks"] else "",
             "Top Mitigation": l["mitigations"][0] if l["mitigations"] else "",
         })
-    return pd.DataFrame(rows).sort_values("Lens").reset_index(drop=True)
+    return pd.DataFrame(rows).sort_values("Contribution (%)", ascending=False).reset_index(drop=True)
 
 def config_fingerprint(lenses, weights, variant_choice, rubrics) -> str:
     payload = {
@@ -513,7 +461,7 @@ def build_printable_html(full_json: dict, df: pd.DataFrame, summary: str, overal
       h1,h2,h3 { margin: 0 0 8px; }
       .meta { color: #555; margin-bottom: 16px; }
       table { border-collapse: collapse; width: 100%; margin: 12px 0; }
-      th, td { border: 1px solid #ddd; padding: 8px; font-size: 12.5px; }
+      th, td { border: 1px solid #ddd; padding: 8px; font-size: 12.5px; white-space: normal; word-wrap: break-word; }
       pre { background: #fafafa; border: 1px solid #eee; padding: 12px; overflow: auto; }
       @media print { .no-print { display: none !important; } body { margin: 8mm; } }
     </style>
@@ -538,12 +486,12 @@ st.set_page_config(page_title=APP_TITLE, page_icon="🧭", layout="wide")
 require_pin()
 
 st.title(APP_TITLE)
-st.caption("Paste your idea (≤300 words). We return multi-SME scores + a concise summary. Nothing is stored unless you download.")
+st.caption("Paste your idea (≤500 words). We return multi-SME scores + a concise summary. Nothing is stored unless you download.")
 
 col1, col2 = st.columns([2, 1])
 with col1:
     idea_text = st.text_area(
-        "Your idea (≤300 words)",
+        "Your idea (≤500 words)",
         height=240,
         placeholder="Describe the problem, solution, user, market, monetization, and tech approach...",
     )
@@ -567,7 +515,7 @@ with st.sidebar:
     weights = {}
     for key, name in lenses:
         weights[key] = st.slider(name, 0, 12, DEFAULT_WEIGHTS.get(key, 8), 1)
-    st.caption("Weights normalized to 100 in the final score.")
+    st.caption("Weights affect the **overall 100** only; they do **not** change per-lens scores.")
 
 # =========================================================
 # Action
@@ -594,13 +542,14 @@ if run_btn:
             except Exception as e:
                 results.append({
                     "lens_key": k, "score": 0.0,
+                    "score_rationale": ["Evaluation failed"],
                     "strengths": [],
                     "weaknesses": [f"Evaluation failed: {str(e)}"],
                     "risks": ["Model output invalid or provider error."],
                     "mitigations": ["Retry later or adjust description for clarity."]
                 })
 
-        overall = aggregate_score(results, weights)
+        overall = aggregate_score(results, {k: weights[k] for k, _ in lenses})
         try:
             summary = call_summary(client, results, seed)
         except Exception:
@@ -611,12 +560,59 @@ if run_btn:
     st.success(f"Done in {elapsed:.1f}s. Overall Score: **{overall}/100**")
     st.caption(f"Config fingerprint: `{cfg_fp}` • Schema: v{SCHEMA_VERSION}")
 
+    # ---------------- Overview table + expandable bubbles ----------------
+    st.markdown("### Lens Breakdown")
+    left, right = st.columns([3, 2])
+
+    with left:
+        df_overview = to_dataframe_overview(results, {k: weights[k] for k, _ in lenses})
+
+        # Controls: manual height + wrapping (for long lens names if you customize)
+        max_rows = max(5, len(df_overview))
+        default_rows = min(10, max_rows)
+        c1, c2, _ = st.columns([1, 1, 3])
+        rows_visible = c1.slider("Rows visible", 5, max_rows, default_rows)
+        wrap_cells = c2.checkbox("Wrap text", value=True)
+
+        row_h = 42
+        height_px = 56 + rows_visible * row_h
+
+        if wrap_cells:
+            styled = df_overview.style.set_properties(**{"white-space": "pre-wrap", "word-wrap": "break-word"})
+            st.dataframe(styled, use_container_width=True, hide_index=True, height=height_px)
+        else:
+            st.dataframe(df_overview, use_container_width=True, hide_index=True, height=height_px)
+
+    with right:
+        # Sort lenses by contribution to show the most impactful first
+        active_w = {l["lens_key"]: float(weights.get(l["lens_key"], 0)) for l in results}
+        total_w = sum(active_w.values()) or 1.0
+        def contrib(l): return (float(l["score"])/10.0) * active_w.get(l["lens_key"], 0.0) * (100.0/total_w)
+        results_sorted = sorted(results, key=contrib, reverse=True)
+
+        st.subheader("Details (click to expand)")
+        for l in results_sorted:
+            k = l["lens_key"]; w = int(active_w.get(k, 0)); c = contrib(l)
+            with st.expander(f"{k.capitalize()} — {l['score']}/10 • weight {w} • {c:.1f}% overall"):
+                st.markdown("**Why this score**")
+                for r in l.get("score_rationale", []):
+                    st.markdown(f"- {r}")
+
+                colA, colB = st.columns(2)
+                with colA:
+                    st.markdown("**Strengths**")
+                    for s in l.get("strengths", [])[:4]: st.markdown(f"- {s}")
+                    st.markdown("**Mitigations**")
+                    for m in l.get("mitigations", [])[:4]: st.markdown(f"- {m}")
+                with colB:
+                    st.markdown("**Weaknesses**")
+                    for ww in l.get("weaknesses", [])[:4]: st.markdown(f"- {ww}")
+                    st.markdown("**Risks**")
+                    for rr in l.get("risks", [])[:4]: st.markdown(f"- {rr}")
+
+    # ---------------- Executive Summary & JSON ----------------
     st.markdown("### Executive Summary")
     st.write(summary)
-
-    st.markdown("### Lens Breakdown")
-    df = to_dataframe(results)
-    st.dataframe(df, use_container_width=True, hide_index=True)
 
     st.markdown("### Full JSON")
     full = {
@@ -628,7 +624,7 @@ if run_btn:
         "executive_summary": summary,
         "prompt_variant": variant_choice,
         "strict_qc": strict_qc,
-        "seed_used": seed,
+        "seed_used": int(seed) if seed_opt else None,
         "model": "gpt-4o-mini",
         "config_fingerprint": cfg_fp,
         "privacy_process_and_delete": privacy,
@@ -643,7 +639,8 @@ if run_btn:
         mime="application/json",
         use_container_width=True,
     )
-    printable_html = build_printable_html(full, df, summary, overall, cfg_fp)
+    df_print = to_dataframe_detailed(results, {k: weights[k] for k, _ in lenses})
+    printable_html = build_printable_html(full, df_print, summary, overall, cfg_fp)
     st.download_button(
         "Download printable report (HTML)",
         data=printable_html.encode("utf-8"),
