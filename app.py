@@ -453,7 +453,8 @@ if run_btn:
 
     st.markdown("### Lens Breakdown")
     df = to_dataframe(results)
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
 
     st.markdown("### Full JSON")
     full = {
