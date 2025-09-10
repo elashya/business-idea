@@ -11,7 +11,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 # App metadata / simple schema+config versioning
 # =========================================================
 APP_TITLE = "Startup Idea Copilot – Multi-SME Evaluation"
-MAX_WORDS = 500
+MAX_WORDS = 300
 SCHEMA_VERSION = 2  # bump only if the JSON SHAPE changes
 
 # =========================================================
@@ -538,12 +538,12 @@ st.set_page_config(page_title=APP_TITLE, page_icon="🧭", layout="wide")
 require_pin()
 
 st.title(APP_TITLE)
-st.caption("Paste your idea (≤500 words). We return multi-SME scores + a concise summary. Nothing is stored unless you download.")
+st.caption("Paste your idea (≤300 words). We return multi-SME scores + a concise summary. Nothing is stored unless you download.")
 
 col1, col2 = st.columns([2, 1])
 with col1:
     idea_text = st.text_area(
-        "Your idea (≤500 words)",
+        "Your idea (≤300 words)",
         height=240,
         placeholder="Describe the problem, solution, user, market, monetization, and tech approach...",
     )
