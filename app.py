@@ -1,16 +1,21 @@
-import json, textwrap, time, random
+import json, time, random, os, hashlib
 from typing import List, Dict, Callable
-import streamlit as st
-from pydantic import BaseModel, Field, ValidationError, conlist, confloat, field_validator
-from tenacity import retry, stop_after_attempt, wait_exponential
-import pandas as pd
 
-# =======================
-# App Settings
-# =======================
+import streamlit as st
+import pandas as pd
+from pydantic import BaseModel, ValidationError, conlist, confloat, field_validator
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+# =========================================================
+# App metadata / simple schema+config versioning
+# =========================================================
 APP_TITLE = "Startup Idea Copilot – Multi-SME Evaluation"
 MAX_WORDS = 500
+SCHEMA_VERSION = 1  # bump only if you change the SHAPE of the JSON output
 
+# =========================================================
+# Lenses & Weights
+# =========================================================
 LITE_LENSES = [
     ("business", "Business Viability"),
     ("finance", "Finance & Monetization"),
@@ -37,7 +42,7 @@ DEFAULT_WEIGHTS = {
     "ethics": 4, "branding": 6, "support": 6,
 }
 
-# Short rubric snippets (extend anytime)
+# Short rubric snippets (extend as you like)
 RUBRICS = {
     "business": "10: clear problem/solution/TAM; 7–8: decent fit; 5–6: unclear target; ≤4: weak value prop.",
     "finance": "10: strong pricing, CAC/LTV logic; 7–8 plausible; 5–6 thin; ≤4 not viable.",
@@ -55,7 +60,7 @@ RUBRICS = {
     "support": "10: self-serve, low cost; 7–8: manageable; 5–6: costly; ≤4: unsustainable.",
 }
 
-# Few-shot anchors (add more over time)
+# Few-shot anchors (add more over time for stability)
 FEW_SHOTS = {
     "finance": {
         "idea": "A SaaS tool for freelancers that tracks invoices and auto-chases late payments.",
@@ -76,7 +81,7 @@ FEW_SHOTS = {
             "strengths": ["Simple stack feasible", "Low infra needs", "Fast iteration cycles"],
             "weaknesses": ["Model performance may be limited by sparse data"],
             "risks": ["Cold-start personalization", "Vendor lock-in for notifications"],
-            "mitigations": ["Hybrid rules+ML", "Event telemetry and A/B tests", "Abstract notification provider"]
+            "mitigations": ["Hybrid rules+ML", "Event telemetry & A/B tests", "Abstract notification provider"]
         }
     },
     "legal": {
@@ -125,29 +130,77 @@ Rubric guide:
 Avoid generic advice. No extra text."""
 
 PROMPT_VARIANTS: Dict[str, List[Callable[[str, str, str], str]]] = {
-    # defaults for all lenses
-    "*": [prompt_a, prompt_b],
-    # you could override per-lens if needed, e.g.:
-    # "finance": [prompt_b, prompt_a],
+    "*": [prompt_a, prompt_b],  # default for all lenses
 }
 
-# =======================
-# OpenAI client
-# =======================
+# =========================================================
+# Secrets: OpenAI + PIN Gate
+# =========================================================
 def get_openai_client():
-    import os, streamlit as st
-    from openai import OpenAI
+    """Read API key from Streamlit secrets (preferred) or env; returns OpenAI client."""
+    try:
+        from openai import OpenAI
+    except Exception as e:
+        raise RuntimeError("OpenAI package not installed. Check requirements.txt") from e
 
     api_key = st.secrets.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise RuntimeError(
-            "Missing OPENAI_API_KEY. Add it in Streamlit Cloud → App → Settings → Secrets."
-        )
+        raise RuntimeError("Missing OPENAI_API_KEY. Add it in Streamlit Cloud → App → Settings → Secrets.")
     return OpenAI(api_key=api_key)
 
-# =======================
-# Schemas & Validation
-# =======================
+def _get_pin_secrets():
+    pin_plain = st.secrets.get("APP_PIN") or os.getenv("APP_PIN")
+    pin_hash = st.secrets.get("APP_PIN_SHA256") or os.getenv("APP_PIN_SHA256")
+    return pin_plain, pin_hash
+
+def require_pin():
+    """Simple PIN gate. If no PIN configured, gate is disabled."""
+    pin_plain, pin_hash = _get_pin_secrets()
+    if not pin_plain and not pin_hash:
+        return True
+
+    if st.session_state.get("authed"):
+        with st.sidebar:
+            st.success("🔒 PIN verified")
+            if st.button("Log out"):
+                st.session_state.clear()
+                st.rerun()
+        return True
+
+    attempts = st.session_state.get("pin_attempts", 0)
+    if attempts >= 5:
+        st.error("Too many incorrect attempts. Please refresh and try again later.")
+        st.stop()
+
+    st.set_page_config(page_title=APP_TITLE, page_icon="🧭", layout="wide")
+    st.title("🔐 Enter Access PIN")
+    with st.form("pin_form"):
+        user_pin = st.text_input("PIN", type="password")
+        submitted = st.form_submit_button("Enter")
+
+    if submitted:
+        ok = False
+        if pin_plain and user_pin == str(pin_plain):
+            ok = True
+        elif pin_hash:
+            h = hashlib.sha256(user_pin.encode("utf-8")).hexdigest()
+            if h == pin_hash:
+                ok = True
+
+        if ok:
+            st.session_state["authed"] = True
+            st.session_state["pin_attempts"] = 0
+            st.rerun()
+        else:
+            st.session_state["pin_attempts"] = attempts + 1
+            st.error("Incorrect PIN.")
+            st.stop()
+    else:
+        st.stop()
+
+# =========================================================
+# Pydantic schema + sanitization
+# =========================================================
 class LensOutput(BaseModel):
     lens_key: str
     score: confloat(ge=0, le=10)
@@ -171,12 +224,13 @@ def sanitize_output(data: dict) -> dict:
         data[k] = [s for s in seq if isinstance(s, str) and s.strip()][:8]
         if not data[k]:
             data[k] = ["(no item)"]
-    if not data.get("lens_key"): data["lens_key"] = "unknown"
+    if not data.get("lens_key"):
+        data["lens_key"] = "unknown"
     return data
 
-# =======================
-# Prompts
-# =======================
+# =========================================================
+# Prompt builders
+# =========================================================
 def lens_system_prompt(lens_key: str, lens_name: str, variant_idx: int = 0) -> str:
     rubric = RUBRICS[lens_key]
     builders = PROMPT_VARIANTS.get(lens_key, PROMPT_VARIANTS["*"])
@@ -190,9 +244,9 @@ def exec_summary_prompt() -> str:
 - Neutral, concise tone
 Return plain text only."""
 
-# =======================
-# LLM Calls (with repair & few-shot)
-# =======================
+# =========================================================
+# LLM calls (with repair + few-shot)
+# =========================================================
 def _build_messages_for_lens(lens_key: str, lens_name: str, idea_text: str, variant_idx: int):
     msgs = [{"role": "system", "content": lens_system_prompt(lens_key, lens_name, variant_idx)}]
     if lens_key in FEW_SHOTS:
@@ -219,7 +273,6 @@ def call_lens(client, lens_key: str, lens_name: str, idea_text: str, variant_idx
     try:
         LensOutput(**data)
     except ValidationError as ve:
-        # Try repair
         data = repair_lens_json(client, lens_key, lens_name, idea_text, data, str(ve), variant_idx, seed)
         LensOutput(**data)
     return sanitize_output(data)
@@ -256,9 +309,9 @@ def call_summary(client, lenses_json: List[Dict], seed: int | None):
     )
     return resp.choices[0].message.content.strip()
 
-# =======================
-# Scoring & Tables
-# =======================
+# =========================================================
+# Scoring / Tables / Fingerprint
+# =========================================================
 def aggregate_score(lenses: List[Dict], weights: Dict[str, float]) -> float:
     active = {k: v for k, v in weights.items() if any(l["lens_key"] == k for l in lenses)}
     total_w = sum(active.values()) or 1.0
@@ -280,9 +333,22 @@ def to_dataframe(lenses: List[Dict]) -> pd.DataFrame:
         })
     return pd.DataFrame(rows).sort_values("Lens")
 
-# =======================
+def config_fingerprint(lenses, weights, variant_choice, rubrics) -> str:
+    payload = {
+        "lenses": [k for k, _ in lenses],
+        "weights": {k: weights[k] for k, _ in lenses},
+        "variant": variant_choice,
+        "rubrics": {k: rubrics[k] for k, _ in lenses},
+    }
+    h = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    return h[:8]
+
+# =========================================================
 # UI
-# =======================
+# =========================================================
+# PIN gate FIRST (blocks until success if PIN configured)
+require_pin()
+
 st.set_page_config(page_title=APP_TITLE, page_icon="🧭", layout="wide")
 st.title(APP_TITLE)
 st.caption("Paste your idea (≤500 words). We return multi-SME scores + a concise summary. Nothing is stored unless you download.")
@@ -306,17 +372,17 @@ with col2:
     privacy = st.checkbox("Process & delete (do not retain input)", value=True)
     run_btn = st.button("Run Evaluation", type="primary", use_container_width=True)
 
-# Sidebar: adjust weights
+# Sidebar: tweak weights
 with st.sidebar:
     st.subheader("Weights (optional)")
     weights = {}
     for key, name in lenses:
         weights[key] = st.slider(name, 0, 12, DEFAULT_WEIGHTS.get(key, 8), 1)
-    st.caption("Weights are normalized to 100 in the final score.")
+    st.caption("Weights normalized to 100 in the final score.")
 
-# =======================
+# =========================================================
 # Action
-# =======================
+# =========================================================
 if run_btn:
     if not idea_text.strip():
         st.error("Please paste your idea first.")
@@ -337,7 +403,6 @@ if run_btn:
                 out = call_lens(client, k, name, idea_text, v_idx, seed)
                 results.append(out)
             except Exception as e:
-                # graceful degradation
                 results.append({
                     "lens_key": k, "score": 0.0,
                     "strengths": [],
@@ -354,7 +419,10 @@ if run_btn:
 
         elapsed = time.time() - start
 
+    cfg_fp = config_fingerprint(lenses, weights, variant_choice, RUBRICS)
     st.success(f"Done in {elapsed:.1f}s. Overall Score: **{overall}/100**")
+    st.caption(f"Config fingerprint: `{cfg_fp}` • Schema: v{SCHEMA_VERSION}")
+
     st.markdown("### Executive Summary")
     st.write(summary)
 
@@ -364,14 +432,16 @@ if run_btn:
 
     st.markdown("### Full JSON")
     full = {
+        "schema_version": SCHEMA_VERSION,
         "mode": "pro" if len(lenses) > 7 else "lite",
         "overall_score": overall,
         "weights": {k: weights[k] for k, _ in lenses},
         "lenses": results,
         "executive_summary": summary,
-        "rubric_version": "v1.1.0",
         "prompt_variant": variant_choice,
         "seed_used": seed,
+        "model": "gpt-4o-mini",
+        "config_fingerprint": cfg_fp,
         "privacy_process_and_delete": privacy,
     }
     st.code(json.dumps(full, ensure_ascii=False, indent=2), language="json")
